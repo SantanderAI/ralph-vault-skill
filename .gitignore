@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Test / coverage artifacts
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# OS
+.DS_Store
+
+# Internal intake artifacts (not for publication)
+*.local
+
+# Vaults / plans generated while testing the skill locally
+/vault/
+/plan/
+*.tmp

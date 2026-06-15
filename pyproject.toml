@@ -1,0 +1,51 @@
+# ralph-vault-skill — tooling configuration.
+#
+# This project ships a stdlib-only CLI (scripts/gv.py) plus an agent skill; it is
+# NOT published as a PyPI package, so there is no [build-system]/[project] table.
+# This file centralizes lint, format, type-check, test and coverage configuration.
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["scripts", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "SIM", "PTH"]
+# Line length is enforced by Black formatting; E501 would also flag long string
+# literals that cannot be wrapped, so we defer length entirely to the formatter.
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["gv"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["scripts"]
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_untyped_defs = false
+no_implicit_optional = true
+check_untyped_defs = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+addopts = "-v --cov=gv --cov-report=term-missing --cov-fail-under=95"
+
+[tool.coverage.run]
+branch = true
+source = ["gv"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 95
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]

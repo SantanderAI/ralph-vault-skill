@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ralph Vault"
+  short_description: "Create & maintain a knowledge vault for code repos"
+  default_prompt: "Initialize or update the project's ralph-vault and document its repos."
