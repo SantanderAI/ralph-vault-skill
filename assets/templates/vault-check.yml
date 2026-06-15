@@ -1,0 +1,37 @@
+# ralph-vault CI gate — fail a PR/push when the vault drifts from the code.
+# Copy to .github/workflows/vault-check.yml in the repo that owns the vault.
+#
+# Caveat: staleness is computed from git history of each entry's `source` path,
+# so the gate is meaningful only when the documented sources are checked out in
+# this job (i.e. the vault lives in the same repo/monorepo as the code). For
+# `url` / out-of-repo sources, only `validate` and docs-existence are enforced.
+#
+# Override paths with the RALPHVAULT_VAULT / RALPHVAULT_GV env vars below.
+name: vault-check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  RALPHVAULT_VAULT: vault
+  RALPHVAULT_GV: scripts/gv.py
+
+jobs:
+  vault-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # gv.py staleness needs full git history
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Validate vault structure (frontmatter / wikilinks / no source code)
+        run: python3 "$RALPHVAULT_GV" --vault "$RALPHVAULT_VAULT" validate
+
+      - name: Gate on drift (missing / pending / stale repos)
+        run: python3 "$RALPHVAULT_GV" --vault "$RALPHVAULT_VAULT" check --gate

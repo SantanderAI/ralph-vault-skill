@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "project": "example-project",
+  "vault_root": ".",
+  "settings": {
+    "token_budget": 2000,
+    "required_frontmatter": ["type", "load_tier", "schema_version"],
+    "glossary": "glossary/terms.md"
+  },
+  "repos": [
+    {
+      "name": "billing-svc",
+      "source": "../billing-svc",
+      "source_kind": "path",
+      "kind": "repo",
+      "stack": "java",
+      "phase": "done",
+      "last_sync_commit": "a1b2c3d"
+    },
+    {
+      "name": "shared-ui",
+      "source": "../monorepo/packages/ui",
+      "source_kind": "path",
+      "kind": "subdir",
+      "stack": "frontend",
+      "phase": "pending",
+      "last_sync_commit": null
+    }
+  ]
+}
