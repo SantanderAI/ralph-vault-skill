@@ -180,7 +180,7 @@ which the CLA Assistant bot will prompt you to sign on your first PR.
 ## Security
 
 To report a security vulnerability, please follow the process described in
-[SECURITY.md](SECURITY.md). **Do not open a public issue for security vulnerabilities.**
+[SECURITY.md](.github/SECURITY.md). **Do not open a public issue for security vulnerabilities.**
 
 ## License
 

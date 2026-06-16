@@ -57,7 +57,7 @@ This project is a project-agnostic agent skill plus a dependency-free Python CLI
 - Never commit internal URLs, IP addresses, or corporate email addresses
 - Never commit personally identifiable information (PII) or customer data
 - Use environment variables for any configuration that could be sensitive
-- Keep dependencies up to date (Dependabot is enabled on this repository)
+- Keep dependencies up to date (Dependabot version updates are configured in `.github/dependabot.yml`)
 
 ## Disclosure Policy
 

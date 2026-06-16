@@ -12,7 +12,7 @@ By participating, you agree to abide by our [Code of Conduct](CODE_OF_CONDUCT.md
 - **Report a bug** — open a [bug report issue](.github/ISSUE_TEMPLATE/bug_report.yml).
 - **Request a feature** — open a [feature request issue](.github/ISSUE_TEMPLATE/feature_request.yml).
 - **Submit a change** — follow the fork-based pull request flow below.
-- **Report a vulnerability** — see [SECURITY.md](SECURITY.md) (do **not** open a public issue).
+- **Report a vulnerability** — see [SECURITY.md](.github/SECURITY.md) (do **not** open a public issue).
 
 ## Pull Request Process
 
