@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "ralph-vault: a progressive-disclosure knowledge vault skill"
+abstract: >-
+  A Python CLI tool / library to create and maintain a progressive-disclosure
+  knowledge vault (a tiered "deepwiki") for one or many code repositories — the
+  knowledge source for LLM / AI agent loops (ralph-style).
+type: software
+authors:
+  - name: "Santander AI Lab"
+repository-code: "https://github.com/SantanderAI/ralph-vault-skill"
+url: "https://github.com/SantanderAI/ralph-vault-skill"
+license: Apache-2.0
+version: 0.1.0
+date-released: 2026-06-11
+keywords:
+  - ai
+  - llm
+  - llm-agents
+  - knowledge-base
+  - documentation

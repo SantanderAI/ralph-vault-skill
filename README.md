@@ -1,7 +1,8 @@
 # ralph-vault
 
-> Create and maintain a progressive-disclosure knowledge vault (a tiered "deepwiki")
-> for one or many code repositories — the knowledge source for ralph-style agent loops.
+> **Open source by Santander AI Lab.** A Python **CLI tool / library** to create and maintain a
+> progressive-disclosure knowledge vault (a tiered "deepwiki") for one or many code repositories —
+> the knowledge source for **LLM / AI agent** loops (ralph-style).
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -11,6 +12,8 @@
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Conventional Commits](https://img.shields.io/badge/Conventional%20Commits-1.0.0-yellow.svg)](https://conventionalcommits.org)
 [![GitHub last commit](https://img.shields.io/github/last-commit/SantanderAI/ralph-vault-skill)](https://github.com/SantanderAI/ralph-vault-skill/commits/main)
+Part of [**Santander AI Open Source**](https://github.com/SantanderAI) — open source AI projects from Banco Santander ([santander.com](https://santander.com)).
+
 
 ---
 
