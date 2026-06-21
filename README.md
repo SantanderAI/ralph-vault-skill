@@ -159,6 +159,7 @@ ralph-loop.sh 30 plan/plan.md                 # drive generation (any ralph runn
 python3 $gv --vault vault validate            # gate
 python3 $gv --vault vault check               # status (path-aware staleness)
 python3 $gv --vault vault mark-synced --repo my-svc   # close: advance last_sync_commit + log to meta/changelog.md
+python3 $gv --vault vault mark-reconciled --repo my-svc  # close an omission audit: advance last_reconcile_commit
 python3 $gv --vault vault changelog --repo my-svc     # read the sync log (filters: --repo, --since, --limit)
 ```
 

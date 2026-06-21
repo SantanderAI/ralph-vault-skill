@@ -21,6 +21,9 @@ A repo with none of these prints `[ok] <name>: up to date`.
 ## Advisories (non-gating, `[~]`)
 
 - **stack with no tailored section map** — falls back to `generic`.
+- **change-drift → regenerate N section(s)** — a stale repo's changed files mapped (via `source_globs`) to the exact docs that own them, so the loop knows *what* to regenerate, not merely *that* something moved.
+- **N source file(s) not covered by any section's `source_globs` — possible omission** — tracked source files that no doc claims. Deterministic, language-agnostic, file-level: catches files undocumented since the original sync — the blind spot commit-equality reports as "up to date" forever. It cannot see uncovered items *inside* a covered file (e.g. a new route in an already-documented controller); that is the LLM reconcile pass's job. Only computed once a repo declares `source_globs`.
+- **reconcile due (N commits since last audit)** — a `done` repo whose source has moved more than `reconcile_after_commits` (default 25) since its last full omission audit, or that was never audited. Plan it with `gv.py plan --reconcile` (or `--needs-work`) to drive a `reconcile` task that re-reads the surface and documents anything missing *inside* covered files. This is the LLM counterpart to the deterministic file-level coverage check.
 - **stale repo referenced by N graph doc(s)** — when a repo is stale, the `relations`/`components`/`infrastructure`/`technologies` docs that wikilink to it may be outdated; re-plan to refresh the graph.
 - **no `source_globs`** (reported by `validate`) — that repo's sync falls back to a whole-repo refresh instead of module-level.
 
