@@ -19,6 +19,7 @@ Subcommands:
   validate  Frontmatter / wikilink / token-budget gate over the vault.
   plan      Emit plan/plan.md + plan/task/NN.md for a ralph loop.
   mark-synced  Advance a repo's last_sync_commit + log to meta/changelog.md.
+  mark-reconciled  Advance last_reconcile_commit (omission-audit baseline).
   changelog    Print recent sync-log entries (filter by --repo / --since).
 
 Config lives at <vault>/.ralphvault/config.json.
@@ -76,10 +77,17 @@ LOAD_TIER = {
 # Edge categories for the relations tier (subdirs created on demand by prompts).
 RELATION_KINDS = ("grpc", "http", "kafka", "db", "code", "secret", "apm", "other")
 
+# Commits touching a repo's source after which a full omission audit (reconcile)
+# falls due, even if commit-equality still reports "up to date". Decouples the
+# completeness re-read from change detection: pre-existing omission does not
+# correlate with new commits, so it needs an occasional cadence-driven re-look.
+RECONCILE_AFTER_COMMITS = 25
+
 DEFAULT_SETTINGS = {
     "token_budget": 2000,
     "required_frontmatter": ["type", "load_tier", "schema_version"],
     "glossary": "glossary/terms.md",
+    "reconcile_after_commits": RECONCILE_AFTER_COMMITS,
 }
 
 CONFIG_REL = ".ralphvault/config.json"
@@ -186,6 +194,60 @@ def git_changed_paths(path: Path, since: str) -> list[str] | None:
     return files
 
 
+def git_tracked_files(path: Path) -> list[str] | None:
+    """Tracked files under `path`, relative to `path` (honours .gitignore).
+
+    Like `git_changed_paths` but the whole current inventory rather than a diff.
+    Used to compute file-level coverage (which source files no doc claims). Returns
+    None when there is no git root, so callers skip the coverage advisory.
+    """
+    path = path.resolve()
+    root = git_root(path)
+    if root is None:
+        return None
+    rel = os.path.relpath(path, root.resolve())
+    target = rel if rel not in (".", "") else "."
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "--", target],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    files = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
+    if rel not in (".", ""):
+        prefix = rel.rstrip("/") + "/"
+        files = [f[len(prefix) :] if f.startswith(prefix) else f for f in files]
+    return files
+
+
+def git_commit_distance(path: Path, since: str) -> int | None:
+    """Count of commits touching `path` in `since`..HEAD, or None if uncomputable.
+
+    Path-aware like the other git helpers. Used to drive the reconcile cadence.
+    """
+    path = path.resolve()
+    root = git_root(path)
+    if root is None:
+        return None
+    rel = os.path.relpath(path, root.resolve())
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(root), "rev-list", "--count", f"{since}..HEAD", "--", rel],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    try:
+        return int(out.stdout.strip())
+    except ValueError:
+        return None
+
+
 # --------------------------------------------------------------------------- #
 # Staleness / selection helpers (shared by check, plan, mark-synced)
 # --------------------------------------------------------------------------- #
@@ -215,6 +277,31 @@ def entry_needs_work(vault: Path, repo: dict) -> list[str]:
     if is_stale:
         reasons.append(f"STALE(local {head} != synced {synced})")
     return reasons
+
+
+def reconcile_due(repo: dict, threshold: int) -> tuple[bool, int | None]:
+    """Whether a full LLM omission audit (reconcile) is due, + commits since the last.
+
+    Returns (is_due, commits_since_reconcile). Due when the repo is documented
+    (`phase: done`, path source) and either was never reconciled, its audit baseline
+    is unreachable, or `threshold` commits have touched the source since. This is the
+    cadence that catches omission *inside* already-covered files — the gap the
+    deterministic file-level coverage check cannot see. Non-path / non-done repos are
+    never due (nothing to audit yet).
+    """
+    if repo.get("source_kind") != "path" or repo.get("phase") != "done":
+        return (False, None)
+    last = repo.get("last_reconcile_commit")
+    if not last:
+        return (True, None)
+    dist = git_commit_distance(Path(repo["source"]).expanduser(), last)
+    if dist is None:
+        return (True, None)
+    return (dist > threshold, dist)
+
+
+def _reconcile_threshold(cfg: dict) -> int:
+    return cfg["settings"].get("reconcile_after_commits", RECONCILE_AFTER_COMMITS)
 
 
 def now_iso() -> str:
@@ -318,6 +405,7 @@ def cmd_add(args) -> int:
         "stack": args.stack or "auto",
         "phase": "pending",
         "last_sync_commit": None,
+        "last_reconcile_commit": None,
     }
     cfg["repos"].append(entry)
     save_config(vault, cfg)
@@ -392,6 +480,11 @@ def _graph_refs_to_repo(vault: Path, name: str) -> list[str]:
     return hits
 
 
+def _sample(items: list[str], n: int = 8) -> str:
+    """Comma-joined first `n` items with an ellipsis when truncated."""
+    return ", ".join(items[:n]) + (" …" if len(items) > n else "")
+
+
 def cmd_check(args) -> int:
     vault = Path(args.vault).resolve()
     cfg = load_config(vault)
@@ -410,14 +503,39 @@ def cmd_check(args) -> int:
             info(
                 f"[~] {name}: stack '{stack}' has no tailored section map — falling back to generic"
             )
+        # advisory (non-gating): change drift — which sections own the changed source,
+        # so the loop knows *what to regenerate* (not just *that* something moved).
+        drift = _change_drift(vault, r)
+        if drift is not None:
+            affected, _unmapped = drift
+            if affected:
+                info(
+                    f"[~] {name}: change-drift → regenerate {len(affected)} section(s): "
+                    + _sample(affected)
+                )
+        # advisory (non-gating): omission — tracked source files no section covers.
+        # Catches files undocumented since the original sync, which commit-equality
+        # reports as "up to date" forever (the blind spot this whole feature targets).
+        if r.get("phase") == "done":
+            uncovered = _uncovered_files(vault, r)
+            if uncovered:
+                info(
+                    f"[~] {name}: {len(uncovered)} source file(s) not covered by any "
+                    f"section's source_globs — possible omission: " + _sample(uncovered)
+                )
+        # advisory (non-gating): reconcile due — a full LLM omission audit is overdue
+        # by the commit cadence; catches omission *inside* already-covered files.
+        due, dist = reconcile_due(r, _reconcile_threshold(cfg))
+        if due:
+            since = f"{dist} commits since last audit" if dist is not None else "never audited"
+            info(f"[~] {name}: reconcile due ({since}) — plan with `--reconcile`")
         # advisory (non-gating): graph docs that reference a stale repo may now be outdated
         if entry_staleness(r)[0]:
             refs = _graph_refs_to_repo(vault, name)
             if refs:
                 info(
                     f"[~] {name}: stale repo referenced by {len(refs)} graph doc(s) — review/re-plan: "
-                    + ", ".join(refs[:8])
-                    + (" …" if len(refs) > 8 else "")
+                    + _sample(refs)
                 )
     info(f"\n{problems} repo(s) need attention, {len(cfg['repos']) - problems} ok.")
     return 1 if problems and args.gate else 0
@@ -698,6 +816,56 @@ def _affected_docs(
     return (affected, unmapped)
 
 
+def _repo_source_globs(vault: Path, repo: dict) -> list[re.Pattern]:
+    """All `source_globs` declared across a repo's docs, compiled to regexes."""
+    repo_dir = vault / "repos" / repo["name"]
+    pats: list[re.Pattern] = []
+    for p in sorted(repo_dir.rglob("*.md")):
+        for g in _read_source_globs(p):
+            pats.append(_glob_to_re(g))
+    return pats
+
+
+def _uncovered_files(vault: Path, repo: dict) -> list[str] | None:
+    """Tracked source files under the repo that no doc's `source_globs` covers.
+
+    Deterministic, language-agnostic omission signal (file-level): catches a source
+    file no documentation section claims, including one that already existed at sync
+    time — the blind spot commit-equality cannot see. Cannot see uncovered items
+    *inside* a covered file (that is the LLM reconcile pass's job).
+
+    Returns None — caller skips the advisory — when the repo has no path source, no
+    git root, or no doc declares `source_globs` yet (a legacy vault, where the whole
+    notion of coverage is undefined; `validate` already warns to add them).
+    """
+    if repo.get("source_kind") != "path":
+        return None
+    files = git_tracked_files(Path(repo["source"]).expanduser())
+    if files is None:
+        return None
+    pats = _repo_source_globs(vault, repo)
+    if not pats:
+        return None
+    return [f for f in files if not any(pat.match(f) for pat in pats)]
+
+
+def _change_drift(vault: Path, repo: dict) -> tuple[list[str] | None, list[str]] | None:
+    """For a stale path repo, the (affected_docs, unmapped_changed_files) since sync.
+
+    Returns None when the repo is not stale, has no path source, or no baseline /
+    no changed files — i.e. there is no actionable change-drift to report. `affected`
+    is None for legacy vaults with no `source_globs` declared (same contract as
+    `_affected_docs`), so the caller can tell "no drift" from "cannot scope".
+    """
+    is_stale, _head, synced = entry_staleness(repo)
+    if not is_stale or repo.get("source_kind") != "path" or not synced:
+        return None
+    changed = git_changed_paths(Path(repo["source"]).expanduser(), synced)
+    if not changed:
+        return None
+    return _affected_docs(vault, repo, changed)
+
+
 # --------------------------------------------------------------------------- #
 # plan  (emit ralph-loop plan files)
 # --------------------------------------------------------------------------- #
@@ -752,13 +920,27 @@ GRAPH_TIERS = {
 def _select_targets(args, cfg: dict, vault: Path) -> list[dict]:
     if args.repo:
         return [r for r in cfg["repos"] if r["name"] == args.repo]
+    thr = _reconcile_threshold(cfg)
     if getattr(args, "needs_work", False):
-        return [r for r in cfg["repos"] if entry_needs_work(vault, r)]
+        return [r for r in cfg["repos"] if entry_needs_work(vault, r) or reconcile_due(r, thr)[0]]
+    if getattr(args, "reconcile", False):
+        return [r for r in cfg["repos"] if reconcile_due(r, thr)[0]]
     if getattr(args, "stale", False):
         return [r for r in cfg["repos"] if entry_staleness(r)[0]]
     if args.pending:
         return [r for r in cfg["repos"] if r["phase"] != "done"]
     return list(cfg["repos"])
+
+
+def _task_mode(vault: Path, repo: dict, cfg: dict) -> str:
+    """bootstrap (never done) → sync (done + stale) → reconcile (done + audit due) → sync."""
+    if repo.get("phase") != "done":
+        return "bootstrap"
+    if entry_staleness(repo)[0]:
+        return "sync"
+    if reconcile_due(repo, _reconcile_threshold(cfg))[0]:
+        return "reconcile"
+    return "sync"
 
 
 def cmd_plan(args) -> int:
@@ -786,9 +968,13 @@ def cmd_plan(args) -> int:
     for r in targets:
         n += 1
         task_file = f"task/{n:02d}.md"
-        mode = "bootstrap" if r["phase"] != "done" else "sync"
+        mode = _task_mode(vault, r, cfg)
         lines.append(f"- [ ] {r['name']} ({mode}) → {task_file}")
-        _write_task(plan_dir / "task" / f"{n:02d}.md", r, mode, vault)
+        dest = plan_dir / "task" / f"{n:02d}.md"
+        if mode == "reconcile":
+            _write_reconcile_task(dest, r, vault)
+        else:
+            _write_task(dest, r, mode, vault)
 
     # Always append the graph tasks (relations + components + dependencies) so a
     # plan that (re)builds repos also refreshes the graph. Skipped with --no-graph;
@@ -886,6 +1072,9 @@ def _write_task(path: Path, repo: dict, mode: str, vault: Path) -> None:
             "## Subtasks\n\n"
             "- [ ] Regenerate each affected doc listed under **Diff scope** (full section, not in-place patch); "
             "keep `source_globs` and other frontmatter, bump `commit`/`last_sync`.\n"
+            "- [ ] While regenerating, scan the changed files for any new public/enumerable item "
+            "(route, command, env var, exported symbol, table, event…) not yet documented, and add it — "
+            "the diff is the cheapest moment to catch omission.\n"
             f"- [ ] Refresh the repo-card `agent-context/repo-cards/{repo['name']}.md` if interfaces changed.\n"
             "- [ ] Run `gv.py validate --vault <vault>`; fix any reported error.\n"
             "- [ ] [juez] verify the refreshed docs against the source.\n"
@@ -902,6 +1091,41 @@ def _write_task(path: Path, repo: dict, mode: str, vault: Path) -> None:
             f"- [ ] Close: `gv.py mark-synced --vault <vault> --repo {repo['name']}` (sets phase=done, records the baseline commit + logs it).\n"
         )
     path.write_text("\n".join(parts), encoding="utf-8")
+
+
+def _write_reconcile_task(path: Path, repo: dict, vault: Path) -> None:
+    """Standalone omission-audit task: re-read the surface, document what is missing.
+
+    Cadence-driven (not change-driven): catches items that already existed but were
+    never documented — the blind spot deterministic checks and commit-equality miss.
+    """
+    head = (
+        git_path_head(Path(repo["source"]).expanduser())
+        if repo.get("source_kind") == "path"
+        else None
+    )
+    last = repo.get("last_reconcile_commit")
+    body = (
+        f"# Task — reconcile {repo['name']} (omission audit)\n\n"
+        f"Source: `{repo['source']}` · stack: `{repo['stack']}` · kind: `{repo['kind']}` · "
+        f"last_reconcile: `{last}` → head: `{head}`\n\n"
+        "Follow the FIXED prompt `assets/prompts/reconcile.md` from the ralph-vault skill. "
+        "This is a **completeness** pass, not a rewrite: confirm the existing docs account "
+        f"for everything enumerable in the source under `repos/{repo['name']}/`, and only add "
+        "what is missing.\n\n"
+        "## Subtasks\n\n"
+        "- [ ] Enumerate the public/enumerable surface of the source (routes, commands, env "
+        "vars, exported symbols, tables, events, config flags — whatever the stack exposes).\n"
+        f"- [ ] For each item, confirm it is accounted for in `repos/{repo['name']}/` (literally, "
+        "or subsumed by a summary). List every gap.\n"
+        "- [ ] Document each gap in the owning section (extend, do not rewrite); stamp/keep "
+        "`source_globs` so the file-level coverage check sees the new coverage.\n"
+        "- [ ] Run `gv.py validate --vault <vault>`; fix any reported error.\n"
+        f"- [ ] [juez] verify no enumerable item of {repo['name']} is left undocumented.\n"
+        f"- [ ] Close: `gv.py mark-reconciled --vault <vault> --repo {repo['name']}` "
+        "(records the audit baseline + logs to meta/changelog.md).\n"
+    )
+    path.write_text(body, encoding="utf-8")
 
 
 def _write_graph_task(path: Path, tier: str, cfg: dict) -> None:
@@ -993,10 +1217,44 @@ def cmd_mark_synced(args) -> int:
         die("could not resolve a commit to record (pass --commit for url sources).")
     entry["phase"] = "done"
     entry["last_sync_commit"] = to
+    # The initial bootstrap documents the *whole* surface, so it doubles as the first
+    # omission audit — seed the reconcile baseline. An incremental sync touches only the
+    # changed sections, so it must NOT advance it (that is `mark-reconciled`'s job).
+    if not frm:
+        entry["last_reconcile_commit"] = to
     save_config(vault, cfg)
     _append_changelog(vault, entry, frm, to, changed, affected)
     touch_last_updated(vault)
     info(f"marked '{args.repo}' synced at {to} (was {frm or 'unset'}); logged to {CHANGELOG_REL}")
+    return 0
+
+
+def cmd_mark_reconciled(args) -> int:
+    vault = Path(args.vault).resolve()
+    cfg = load_config(vault)
+    entry = find_repo(cfg, args.repo)
+    if not entry:
+        die(f"'{args.repo}' is not registered.")
+    frm = entry.get("last_reconcile_commit")
+    to = args.commit
+    if entry.get("source_kind") == "path" and not to:
+        to = git_path_head(Path(entry["source"]).expanduser())
+    if not to:
+        die("could not resolve a commit to record (pass --commit for url sources).")
+    entry["last_reconcile_commit"] = to
+    save_config(vault, cfg)
+    p = _ensure_changelog(vault)
+    with p.open("a", encoding="utf-8") as fh:
+        fh.write(
+            f"\n## {now_iso()} · {entry['name']}\n\n"
+            f"- reconciled (omission audit) · baseline `{to}`"
+            + (f" (was `{frm}`)" if frm else "")
+            + "\n"
+        )
+    touch_last_updated(vault)
+    info(
+        f"marked '{args.repo}' reconciled at {to} (was {frm or 'unset'}); logged to {CHANGELOG_REL}"
+    )
     return 0
 
 
@@ -1082,7 +1340,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--needs-work",
         dest="needs_work",
         action="store_true",
-        help="repos that are pending, missing docs/card, or stale (recommended)",
+        help="repos that are pending, missing docs/card, stale, or due an omission audit (recommended)",
+    )
+    s.add_argument(
+        "--reconcile",
+        action="store_true",
+        help="only done repos due a full omission audit (per reconcile_after_commits)",
     )
     s.add_argument(
         "--no-graph",
@@ -1099,6 +1362,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--commit", help="commit to record (default: last commit touching the source path)"
     )
     s.set_defaults(func=cmd_mark_synced)
+
+    s = sub.add_parser(
+        "mark-reconciled", help="advance last_reconcile_commit (omission audit baseline)"
+    )
+    s.add_argument("--repo", required=True)
+    s.add_argument(
+        "--commit", help="commit to record (default: last commit touching the source path)"
+    )
+    s.set_defaults(func=cmd_mark_reconciled)
 
     s = sub.add_parser("changelog", help="print recent sync-log entries from meta/changelog.md")
     s.add_argument("--repo", help="only entries for this repo")

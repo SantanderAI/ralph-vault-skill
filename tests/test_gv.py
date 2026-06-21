@@ -361,7 +361,7 @@ def test_has_source_citation():
 
 
 def test_code_fences_variants():
-    text = "```python\nx=1\n```\n" "~~~text\ntree\n~~~\n" "```\nbare\n```\n"
+    text = "```python\nx=1\n```\n~~~text\ntree\n~~~\n```\nbare\n```\n"
     fences = gv._code_fences(text)
     langs = [f[0] for f in fences]
     assert "python" in langs and "text" in langs and "" in langs
@@ -783,6 +783,373 @@ def test_changelog_multiple_entries(vault, git_repo, capsys):
     cli("--vault", str(vault), "mark-synced", "--repo", "svc")
     assert cli("--vault", str(vault), "changelog", "--limit", "1") == 0
     assert "1 of 2" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- #
+# surface coverage — git_tracked_files / _uncovered_files / _change_drift / check
+# --------------------------------------------------------------------------- #
+def test_git_tracked_files(git_repo):
+    files = gv.git_tracked_files(git_repo)
+    assert files == ["a.py"]
+    commit(git_repo, "b.py", "y = 2\n")
+    assert sorted(gv.git_tracked_files(git_repo)) == ["a.py", "b.py"]
+
+
+def test_git_tracked_files_subdir_prefix(git_repo):
+    sub = git_repo / "pkg"
+    sub.mkdir()
+    (sub / "m.py").write_text("z = 3\n", encoding="utf-8")
+    _git(git_repo, "add", "-A")
+    _git(git_repo, "commit", "-q", "-m", "sub")
+    assert gv.git_tracked_files(sub) == ["m.py"]
+
+
+def test_git_tracked_files_no_git(monkeypatch, tmp_path):
+    monkeypatch.setattr(gv, "git_root", lambda p: None)
+    assert gv.git_tracked_files(tmp_path) is None
+
+
+def test_uncovered_files_none_when_no_globs(vault, git_repo):
+    cli("--vault", str(vault), "add", "--name", "svc", "--path", str(git_repo))
+    repo = read_config(vault)["repos"][0]
+    # no docs declare source_globs yet → coverage is undefined → None
+    assert gv._uncovered_files(vault, repo) is None
+
+
+def test_uncovered_files_flags_omission(vault, git_repo):
+    # b.py is tracked but no doc covers it; a.py is covered → only b.py is uncovered
+    commit(git_repo, "b.py", "y = 2\n")
+    cli("--vault", str(vault), "add", "--name", "svc", "--path", str(git_repo))
+    docs = vault / "repos" / "svc"
+    docs.mkdir(parents=True)
+    (docs / "overview.md").write_text(
+        "---\ntype: repo-doc\nsource_globs: ['a.py']\n---\n", encoding="utf-8"
+    )
+    repo = read_config(vault)["repos"][0]
+    assert gv._uncovered_files(vault, repo) == ["b.py"]
+
+
+def test_uncovered_files_url_source(vault):
+    cli("--vault", str(vault), "add", "--name", "svc", "--url", "https://x/y")
+    repo = read_config(vault)["repos"][0]
+    assert gv._uncovered_files(vault, repo) is None
+
+
+def test_change_drift_none_when_fresh(vault, git_repo):
+    cli("--vault", str(vault), "add", "--name", "svc", "--path", str(git_repo))
+    _mark_done(vault, "svc", gv.git_path_head(git_repo))
+    repo = read_config(vault)["repos"][0]
+    assert gv._change_drift(vault, repo) is None
+
+
+def test_change_drift_maps_changed_to_sections(vault, git_repo):
+    base = gv.git_path_head(git_repo)
+    cli("--vault", str(vault), "add", "--name", "svc", "--path", str(git_repo))
+    docs = vault / "repos" / "svc"
+    docs.mkdir(parents=True)
+    (docs / "api.md").write_text(
+        "---\ntype: repo-doc\nsource_globs: ['a.py']\n---\n", encoding="utf-8"
+    )
+    _mark_done(vault, "svc", base)
+    commit(git_repo, "a.py", "x = 99\n")  # touch the covered file
+    repo = read_config(vault)["repos"][0]
+    affected, unmapped = gv._change_drift(vault, repo)
+    assert affected == ["repos/svc/api.md"]
+    assert unmapped == []
+
+
+def test_check_omission_advisory(vault, git_repo, capsys):
+    commit(git_repo, "secret_handler.py", "y = 2\n")
+    cli("--vault", str(vault), "add", "--name", "svc", "--path", str(git_repo))
+    docs = vault / "repos" / "svc"
+    docs.mkdir(parents=True)
+    (docs / "overview.md").write_text(
+        "---\ntype: repo-doc\nsource_globs: ['a.py']\n---\n", encoding="utf-8"
+    )
+    card = vault / "agent-context" / "repo-cards" / "svc.md"
+    card.parent.mkdir(parents=True, exist_ok=True)
+    card.write_text("c", encoding="utf-8")
+    _mark_done(vault, "svc", gv.git_path_head(git_repo))
+    assert cli("--vault", str(vault), "check") == 0
+    out = capsys.readouterr().out
+    assert "up to date" in out
+    assert "possible omission" in out
+    assert "secret_handler.py" in out
+
+
+def test_check_change_drift_advisory(vault, git_repo, capsys):
+    base = gv.git_path_head(git_repo)
+    cli("--vault", str(vault), "add", "--name", "svc", "--path", str(git_repo))
+    docs = vault / "repos" / "svc"
+    docs.mkdir(parents=True)
+    (docs / "api.md").write_text(
+        "---\ntype: repo-doc\nsource_globs: ['a.py']\n---\n", encoding="utf-8"
+    )
+    card = vault / "agent-context" / "repo-cards" / "svc.md"
+    card.parent.mkdir(parents=True, exist_ok=True)
+    card.write_text("c", encoding="utf-8")
+    _mark_done(vault, "svc", base)
+    commit(git_repo, "a.py", "x = 42\n")
+    cli("--vault", str(vault), "check")
+    out = capsys.readouterr().out
+    assert "change-drift → regenerate" in out
+    assert "repos/svc/api.md" in out
+
+
+# --------------------------------------------------------------------------- #
+# reconcile cadence — git_commit_distance / reconcile_due / mark-reconciled / plan
+# --------------------------------------------------------------------------- #
+def test_git_commit_distance(git_repo):
+    base = gv.git_path_head(git_repo)
+    commit(git_repo, "b.py", "y = 2\n")
+    commit(git_repo, "c.py", "z = 3\n")
+    assert gv.git_commit_distance(git_repo, base) == 2
+
+
+def test_git_commit_distance_bad_ref(git_repo):
+    assert gv.git_commit_distance(git_repo, "deadbeef") is None
+
+
+def test_git_commit_distance_no_git(monkeypatch, tmp_path):
+    monkeypatch.setattr(gv, "git_root", lambda p: None)
+    assert gv.git_commit_distance(tmp_path, "x") is None
+
+
+def test_git_commit_distance_nonint(monkeypatch, tmp_path):
+    monkeypatch.setattr(gv, "git_root", lambda p: tmp_path)
+
+    class R:
+        stdout = "notanumber"
+
+    monkeypatch.setattr(gv.subprocess, "run", lambda *a, **k: R())
+    assert gv.git_commit_distance(tmp_path, "x") is None
+
+
+def _done_repo(git_repo: Path, last_reconcile):
+    return {
+        "source_kind": "path",
+        "phase": "done",
+        "source": str(git_repo),
+        "last_reconcile_commit": last_reconcile,
+    }
+
+
+def test_reconcile_due_not_done():
+    assert gv.reconcile_due({"source_kind": "path", "phase": "pending"}, 25) == (False, None)
+
+
+def test_reconcile_due_url():
+    assert gv.reconcile_due({"source_kind": "url", "phase": "done"}, 25) == (False, None)
+
+
+def test_reconcile_due_never(git_repo):
+    assert gv.reconcile_due(_done_repo(git_repo, None), 25) == (True, None)
+
+
+def test_reconcile_due_fresh(git_repo):
+    base = gv.git_path_head(git_repo)
+    assert gv.reconcile_due(_done_repo(git_repo, base), 25) == (False, 0)
+
+
+def test_reconcile_due_over_threshold(git_repo):
+    base = gv.git_path_head(git_repo)
+    commit(git_repo, "b.py", "y = 2\n")
+    commit(git_repo, "c.py", "z = 3\n")
+    assert gv.reconcile_due(_done_repo(git_repo, base), 1) == (True, 2)
+
+
+def test_reconcile_due_unreachable(git_repo):
+    assert gv.reconcile_due(_done_repo(git_repo, "deadbeef"), 25) == (True, None)
+
+
+def test_reconcile_threshold_default_and_custom():
+    assert gv._reconcile_threshold({"settings": {}}) == gv.RECONCILE_AFTER_COMMITS
+    assert gv._reconcile_threshold({"settings": {"reconcile_after_commits": 3}}) == 3
+
+
+def test_add_initializes_reconcile_baseline(vault):
+    cli("--vault", str(vault), "add", "--name", "svc", "--path", "/tmp/svc")
+    assert read_config(vault)["repos"][0]["last_reconcile_commit"] is None
+
+
+def test_mark_synced_bootstrap_seeds_reconcile(vault, git_repo):
+    cli("--vault", str(vault), "add", "--name", "svc", "--path", str(git_repo))
+    cli("--vault", str(vault), "mark-synced", "--repo", "svc")  # initial bootstrap
+    entry = read_config(vault)["repos"][0]
+    assert entry["last_reconcile_commit"] == entry["last_sync_commit"]
+
+
+def test_mark_synced_sync_keeps_reconcile(vault, git_repo):
+    cli("--vault", str(vault), "add", "--name", "svc", "--path", str(git_repo))
+    cli("--vault", str(vault), "mark-synced", "--repo", "svc")  # bootstrap
+    seeded = read_config(vault)["repos"][0]["last_reconcile_commit"]
+    commit(git_repo, "b.py", "y = 2\n")
+    cli("--vault", str(vault), "mark-synced", "--repo", "svc")  # incremental sync
+    entry = read_config(vault)["repos"][0]
+    assert entry["last_reconcile_commit"] == seeded  # NOT advanced by sync
+    assert entry["last_sync_commit"] != seeded  # but sync did advance
+
+
+def test_mark_reconciled(vault, git_repo, capsys):
+    cli("--vault", str(vault), "add", "--name", "svc", "--path", str(git_repo))
+    cli("--vault", str(vault), "mark-synced", "--repo", "svc")
+    commit(git_repo, "b.py", "y = 2\n")
+    head = gv.git_path_head(git_repo)
+    assert cli("--vault", str(vault), "mark-reconciled", "--repo", "svc") == 0
+    assert read_config(vault)["repos"][0]["last_reconcile_commit"] == head
+    out = capsys.readouterr().out
+    assert "reconciled" in out
+    cl = (vault / gv.CHANGELOG_REL).read_text(encoding="utf-8")
+    assert "omission audit" in cl
+    # second pass logs the previous baseline (the "(was ...)" branch)
+    commit(git_repo, "c.py", "z = 3\n")
+    cli("--vault", str(vault), "mark-reconciled", "--repo", "svc")
+    assert "(was" in (vault / gv.CHANGELOG_REL).read_text(encoding="utf-8")
+
+
+def test_mark_reconciled_not_found(vault):
+    with pytest.raises(SystemExit):
+        cli("--vault", str(vault), "mark-reconciled", "--repo", "nope")
+
+
+def test_mark_reconciled_url_requires_commit(vault):
+    cli("--vault", str(vault), "add", "--name", "r", "--url", "https://x/y")
+    with pytest.raises(SystemExit):
+        cli("--vault", str(vault), "mark-reconciled", "--repo", "r")
+
+
+def test_mark_reconciled_url_with_commit(vault):
+    cli("--vault", str(vault), "add", "--name", "r", "--url", "https://x/y")
+    assert cli("--vault", str(vault), "mark-reconciled", "--repo", "r", "--commit", "abc1234") == 0
+    assert read_config(vault)["repos"][0]["last_reconcile_commit"] == "abc1234"
+
+
+def _make_fresh_but_audit_due(vault: Path, git_repo: Path) -> str:
+    """Add svc, advance sync to HEAD (fresh) but leave reconcile at the old base."""
+    base = gv.git_path_head(git_repo)
+    cli("--vault", str(vault), "add", "--name", "svc", "--path", str(git_repo))
+    commit(git_repo, "b.py", "y = 2\n")
+    head = gv.git_path_head(git_repo)
+    cfg = read_config(vault)
+    cfg["settings"]["reconcile_after_commits"] = 0
+    for r in cfg["repos"]:
+        r["phase"] = "done"
+        r["last_sync_commit"] = head  # fresh (not stale)
+        r["last_reconcile_commit"] = base  # but audit baseline is old
+    write_config(vault, cfg)
+    return head
+
+
+def test_task_mode_bootstrap(vault):
+    cli("--vault", str(vault), "add", "--name", "svc", "--path", "/tmp/svc")
+    cfg = read_config(vault)
+    assert gv._task_mode(vault, cfg["repos"][0], cfg) == "bootstrap"
+
+
+def test_task_mode_sync_when_stale(vault, git_repo):
+    cli("--vault", str(vault), "add", "--name", "svc", "--path", str(git_repo))
+    _mark_done(vault, "svc", "0000000")
+    cfg = read_config(vault)
+    assert gv._task_mode(vault, cfg["repos"][0], cfg) == "sync"
+
+
+def test_task_mode_reconcile(vault, git_repo):
+    _make_fresh_but_audit_due(vault, git_repo)
+    cfg = read_config(vault)
+    assert gv.entry_staleness(cfg["repos"][0])[0] is False
+    assert gv._task_mode(vault, cfg["repos"][0], cfg) == "reconcile"
+
+
+def test_task_mode_sync_fallback(vault, git_repo):
+    head = gv.git_path_head(git_repo)
+    cli("--vault", str(vault), "add", "--name", "svc", "--path", str(git_repo))
+    cfg = read_config(vault)
+    for r in cfg["repos"]:
+        r["phase"] = "done"
+        r["last_sync_commit"] = head
+        r["last_reconcile_commit"] = head
+    write_config(vault, cfg)
+    cfg = read_config(vault)
+    assert gv._task_mode(vault, cfg["repos"][0], cfg) == "sync"
+
+
+def test_select_targets_reconcile(vault, git_repo):
+    _make_fresh_but_audit_due(vault, git_repo)
+
+    class NS:
+        repo = None
+        needs_work = False
+        reconcile = True
+        stale = False
+        pending = False
+
+    sel = gv._select_targets(NS(), read_config(vault), vault)
+    assert [r["name"] for r in sel] == ["svc"]
+
+
+def test_select_targets_needs_work_includes_reconcile(vault, git_repo):
+    _make_fresh_but_audit_due(vault, git_repo)
+    # make entry_needs_work empty so only the reconcile-due branch can select it
+    docs = vault / "repos" / "svc"
+    docs.mkdir(parents=True)
+    (docs / "o.md").write_text("x", encoding="utf-8")
+    card = vault / "agent-context" / "repo-cards" / "svc.md"
+    card.parent.mkdir(parents=True, exist_ok=True)
+    card.write_text("c", encoding="utf-8")
+
+    class NS:
+        repo = None
+        needs_work = True
+        reconcile = False
+        stale = False
+        pending = False
+
+    repo = read_config(vault)["repos"][0]
+    assert gv.entry_needs_work(vault, repo) == []
+    sel = gv._select_targets(NS(), read_config(vault), vault)
+    assert [r["name"] for r in sel] == ["svc"]
+
+
+def test_plan_reconcile_task(vault, git_repo, tmp_path):
+    _make_fresh_but_audit_due(vault, git_repo)
+    plan_dir = tmp_path / "plan"
+    assert (
+        cli("--vault", str(vault), "plan", "--reconcile", "--plan-dir", str(plan_dir), "--no-graph")
+        == 0
+    )
+    plan = (plan_dir / "plan.md").read_text(encoding="utf-8")
+    assert "svc (reconcile)" in plan
+    task = (plan_dir / "task" / "01.md").read_text(encoding="utf-8")
+    assert "omission audit" in task
+    assert "reconcile.md" in task
+    assert "mark-reconciled" in task
+
+
+def test_check_reconcile_due_advisory(vault, git_repo, capsys):
+    _make_fresh_but_audit_due(vault, git_repo)
+    docs = vault / "repos" / "svc"
+    docs.mkdir(parents=True)
+    (docs / "o.md").write_text("x", encoding="utf-8")
+    card = vault / "agent-context" / "repo-cards" / "svc.md"
+    card.parent.mkdir(parents=True, exist_ok=True)
+    card.write_text("c", encoding="utf-8")
+    cli("--vault", str(vault), "check")
+    out = capsys.readouterr().out
+    assert "reconcile due" in out
+    assert "commits since last audit" in out
+
+
+def test_check_reconcile_never_audited_advisory(vault, git_repo, capsys):
+    cli("--vault", str(vault), "add", "--name", "svc", "--path", str(git_repo))
+    docs = vault / "repos" / "svc"
+    docs.mkdir(parents=True)
+    (docs / "o.md").write_text("x", encoding="utf-8")
+    card = vault / "agent-context" / "repo-cards" / "svc.md"
+    card.parent.mkdir(parents=True, exist_ok=True)
+    card.write_text("c", encoding="utf-8")
+    _mark_done(vault, "svc", gv.git_path_head(git_repo))  # done, but last_reconcile stays None
+    cli("--vault", str(vault), "check")
+    assert "never audited" in capsys.readouterr().out
 
 
 # --------------------------------------------------------------------------- #

@@ -5,7 +5,8 @@
   "settings": {
     "token_budget": 2000,
     "required_frontmatter": ["type", "load_tier", "schema_version"],
-    "glossary": "glossary/terms.md"
+    "glossary": "glossary/terms.md",
+    "reconcile_after_commits": 25
   },
   "repos": [
     {
@@ -15,7 +16,8 @@
       "kind": "repo",
       "stack": "java",
       "phase": "done",
-      "last_sync_commit": "a1b2c3d"
+      "last_sync_commit": "a1b2c3d",
+      "last_reconcile_commit": "a1b2c3d"
     },
     {
       "name": "shared-ui",
@@ -24,7 +26,8 @@
       "kind": "subdir",
       "stack": "frontend",
       "phase": "pending",
-      "last_sync_commit": null
+      "last_sync_commit": null,
+      "last_reconcile_commit": null
     }
   ]
 }
