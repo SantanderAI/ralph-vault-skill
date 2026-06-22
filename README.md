@@ -17,7 +17,7 @@ Part of [**Santander AI Open Source**](https://github.com/SantanderAI) — open 
 
 ---
 
-A skill + CLI to **create and maintain a progressive-disclosure knowledge vault** (a tiered "deepwiki") for one or many code repositories, designed to be the knowledge source for [ralph](https://github.com/ghuntley/ralph)-style agent loops. Project-agnostic: documented repos live in a per-vault config registry, nothing is hardcoded.
+A skill + CLI to **create and maintain a progressive-disclosure knowledge vault** (a tiered "deepwiki") for one or many code repositories, designed to be the knowledge source for [ralph](https://ghuntley.com/ralph/)-style agent loops. Project-agnostic: documented repos live in a per-vault config registry, nothing is hardcoded.
 
 ## What it does
 
