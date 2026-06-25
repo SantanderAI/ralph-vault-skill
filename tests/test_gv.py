@@ -12,6 +12,8 @@ import pytest
 
 import gv
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 # --------------------------------------------------------------------------- #
 # helpers
@@ -100,6 +102,19 @@ def test_die(capsys):
 def test_info(capsys):
     gv.info("hi")
     assert "hi" in capsys.readouterr().out
+
+
+def test_skill_routes_external_provider_research_reference():
+    skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+    reference = ROOT / "references" / "external-provider-research.md"
+
+    assert "references/external-provider-research.md" in skill
+    assert reference.exists()
+
+    text = reference.read_text(encoding="utf-8")
+    assert "Linkup" in text
+    assert "source URLs" in text
+    assert "zero-data-retention" in text
 
 
 def test_now_iso():
