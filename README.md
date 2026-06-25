@@ -71,6 +71,7 @@ to a reference under `references/`):
 | **validate** | Frontmatter / wikilink / token-budget gate, plus the no-source-code and source-backlink checks. |
 | **relations** | Generate typed edges between repos (graph tier). |
 | **dependencies** | Catalogue external infra + providers as a reverse index. |
+| **external-provider-research** | Research public provider docs before filling technology notes that affect limits, pricing, security, or data retention. |
 | **components** | Promote shared libraries/components reused by ≥ 2 repos. |
 | **ci** | Wire git/CI gates so the vault can't silently drift. |
 

@@ -13,6 +13,11 @@ After the involved repos are bootstrapped. Re-run when a sync adds/removes an ex
 
 Rule of thumb: operated/deployed by the team → `infrastructure`; remote third-party consumed via SDK/API → `technologies`.
 
+When a technology page needs public provider facts that are not evidenced in the
+repo docs or source (limits, regions, authentication model, pricing, security,
+or data retention), load `references/external-provider-research.md` for a
+source-backed provider research pass before filling those notes.
+
 ## Rules
 
 - **Reverse index is mandatory**: list every consuming repo with a wikilink + evidence path.
