@@ -548,6 +548,12 @@ FM_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
 WIKILINK_RE = re.compile(r"(?<!`)\[\[([^\]]+)\]\]")
 HEADING_RE = re.compile(r"^#{1,6}\s+(.*?)\s*$", re.MULTILINE)
 
+# Narrow, conservative mojibake signals: the U+FFFD replacement char plus a few
+# unambiguous UTF-8-mis-decoded sequences (curly quotes/dashes and common
+# accented vowels). Deliberately avoids broad classes like `Ã.`/`Â.` that would
+# false-positive on legitimate Latin-language text.
+MOJIBAKE_RE = re.compile(r"\uFFFD|â€™|â€œ|â€\x9d|â€“|â€”|Ã©|Ã¨|Ã¬|Ã²|Ã¹")
+
 # Programming-language fences are source code and must not appear in the vault.
 CODE_FENCE_LANGS = {
     "python",
@@ -674,6 +680,12 @@ def cmd_validate(args) -> int:
     for p in _vault_md_files(vault):
         rel = p.relative_to(vault)
         text = p.read_text(encoding="utf-8", errors="replace")
+        # mojibake / encoding corruption (advisory: warning, never gating)
+        hits = MOJIBAKE_RE.findall(text)
+        if hits:
+            warnings.append(
+                f"{rel}: possible mojibake / encoding corruption ({len(hits)} occurrence(s)) — check the file is valid UTF-8"
+            )
         fm = _parse_frontmatter(text)
         if fm is None:
             errors.append(f"{rel}: missing YAML frontmatter")

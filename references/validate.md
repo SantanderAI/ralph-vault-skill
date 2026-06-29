@@ -22,6 +22,7 @@ Exit code `0` = no errors; `1` = at least one error. Warnings never fail the gat
   - a fenced block tagged with a programming language (`python`, `js`, `java`, `go`, `sql`, …) → **error**.
   - an untagged/long fence over `code_fence_max_lines` (default 20) → **error** (likely copied source). Tag diagrams/trees as ```` ```text ```` (also `tree`/`mermaid`/`dot`) to exempt them.
 - **Source backlink** — a `repo-doc` or `module` that cites no source path (no backticked `path`/`path#Symbol`) → **warning**. Keeps the link back to the original code.
+- **Mojibake / encoding** — a doc containing the Unicode replacement char (`�`) or a few unambiguous UTF-8-mis-decoded sequences (e.g. `â€™`, `Ã©`) → **warning**. Advisory only: flags likely encoding corruption, never blocks the gate.
 
 ## Fixing
 
