@@ -435,6 +435,37 @@ def test_validate_warnings(vault, capsys):
     assert "tokens > budget" in err
 
 
+def test_validate_mojibake_doubled_encoding(vault, capsys):
+    doc = vault / "glossary" / "moji.md"
+    doc.write_text(
+        "---\ntype: x\nload_tier: 2\nschema_version: 1\n---\n\n"
+        "# Title\n\nItâ€™s a quote with mojibake.\n",
+        encoding="utf-8",
+    )
+    assert cli("--vault", str(vault), "validate") == 0  # warning never gates
+    assert "mojibake" in capsys.readouterr().err
+
+
+def test_validate_mojibake_replacement_char(vault, capsys):
+    doc = vault / "glossary" / "repl.md"
+    doc.write_text(
+        "---\ntype: x\nload_tier: 2\nschema_version: 1\n---\n\n# Title\n\nbroken � byte.\n",
+        encoding="utf-8",
+    )
+    assert cli("--vault", str(vault), "validate") == 0
+    assert "mojibake" in capsys.readouterr().err
+
+
+def test_validate_no_mojibake_clean(vault, capsys):
+    doc = vault / "glossary" / "clean.md"
+    doc.write_text(
+        "---\ntype: x\nload_tier: 2\nschema_version: 1\n---\n\n# Title\n\nIt's clean UTF-8.\n",
+        encoding="utf-8",
+    )
+    assert cli("--vault", str(vault), "validate") == 0
+    assert "mojibake" not in capsys.readouterr().err
+
+
 # --------------------------------------------------------------------------- #
 # _affected_docs
 # --------------------------------------------------------------------------- #
