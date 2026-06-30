@@ -34,6 +34,7 @@ Load the matching reference file **only** for the action at hand (progressive di
 | Document or refresh repos (incomplete/stale) | **update** | `references/update.md` |
 | Generate typed edges between repos | **relations** | `references/relations.md` |
 | Catalogue external infra + providers (reverse index) | **dependencies** | `references/dependencies.md` |
+| Research public docs for one external provider before filling technology notes | **external-provider-research** | `references/external-provider-research.md` |
 | Promote components/libraries reused by ≥ 2 repos | **components** | `references/components.md` |
 | Frontmatter / wikilink / budget gate | **validate** | `references/validate.md` |
 | Report what is missing / incomplete / stale | **check** | `references/check.md` |
