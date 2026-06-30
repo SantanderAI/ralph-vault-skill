@@ -112,9 +112,9 @@ def test_skill_routes_external_provider_research_reference():
     assert reference.exists()
 
     text = reference.read_text(encoding="utf-8")
-    assert "Linkup" in text
     assert "source URLs" in text
-    assert "zero-data-retention" in text
+    assert "tool-agnostic" in text
+    assert "Linkup" not in text
 
 
 def test_now_iso():
