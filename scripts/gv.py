@@ -21,6 +21,8 @@ Subcommands:
   mark-synced  Advance a repo's last_sync_commit + log to meta/changelog.md.
   mark-reconciled  Advance last_reconcile_commit (omission-audit baseline).
   changelog    Print recent sync-log entries (filter by --repo / --since).
+  search       Semantic search over vault docs (auto-indexes on first query).
+  index        (Re)build the semantic search index.
 
 Config lives at <vault>/.ralphvault/config.json.
 """
@@ -33,9 +35,10 @@ import os
 import re
 import subprocess
 import sys
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
 
 SCHEMA_VERSION = 1
 
@@ -1304,6 +1307,87 @@ def cmd_changelog(args) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# Search — semantic search over vault docs (optional: requires sentence-transformers)
+# --------------------------------------------------------------------------- #
+
+def _import_search() -> Any:
+    """Import the search module, lazy-loading to keep stdlib-only promise."""
+    try:
+        import importlib.util
+        gv_dir = Path(__file__).resolve().parent
+        spec = importlib.util.spec_from_file_location("search", gv_dir / "search.py")
+        if spec is None or spec.loader is None:
+            raise ImportError("search module not found")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except ImportError as e:
+        die(f"semantic search no disponible: {e}")
+
+
+def cmd_search(args) -> int:
+    """Search vault documents using semantic similarity."""
+    vault = Path(args.vault).resolve()
+    search_mod = _import_search()
+
+    results = search_mod.search_vault(
+        vault,
+        args.query,
+        top_k=args.k,
+        backend=args.backend or "auto",
+    )
+
+    if not results:
+        # No index yet — try to create one
+        info("No index found. Building search index...")
+        idx = search_mod.index_vault(vault, backend=args.backend or "auto")
+        if idx["n_docs"] == 0:
+            info("No documents indexed. Is the vault populated?")
+            return 0
+        info(f"Indexed {idx['n_docs']} docs ({idx['backend']} backend). Re-running search...")
+        results = search_mod.search_vault(vault, args.query, top_k=args.k, backend=args.backend or "auto")
+
+    if not results:
+        info("No results found.")
+        return 0
+
+    idx_info: dict = {}
+    idx_path = vault / ".ralphvault" / "search-index.json"
+    with suppress(Exception):
+        if idx_path.exists():
+            idx_info = json.loads(idx_path.read_text(encoding="utf-8"))
+    backend_name = idx_info.get("backend", "auto")
+    info(f"\nResults for '{args.query}' (backend: {backend_name}, {len(results)} results)\n")
+    for i, r in enumerate(results, 1):
+        info(f"{i}. [{r['score']:.3f}] {r['title']}")
+        info(f"   Path: {r['path']}")
+        info(f"   Type: {r['type']} | Repo: {r['repo']} | Tier: {r['load_tier']}")
+        info(f"   Snippet: {r['snippet'][:150]}")
+        info("")
+    return 0
+
+
+def cmd_index(args) -> int:
+    """(Re)build the semantic search index."""
+    vault = Path(args.vault).resolve()
+    search_mod = _import_search()
+
+    idx = search_mod.index_vault(
+        vault,
+        force=args.force,
+        backend=args.backend or "auto",
+    )
+    info(f"Indexed {idx['n_docs']} docs with {idx['backend']} backend at {idx['indexed_at']}")
+    info(f"Index saved to: {vault / '.ralphvault' / 'search-index.json'}")
+    if idx["backend"] == "ngram":
+        info("")
+        info("NOTE: Using n-gram fallback (keyword-only search).")
+        info("Install sentence-transformers for true semantic search:")
+        info("  pip install sentence-transformers")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # argparse
 # --------------------------------------------------------------------------- #
 def build_parser() -> argparse.ArgumentParser:
@@ -1393,6 +1477,34 @@ def build_parser() -> argparse.ArgumentParser:
         "--limit", type=int, default=10, help="max entries to show (default: 10; <=0 = all)"
     )
     s.set_defaults(func=cmd_changelog)
+
+    s = sub.add_parser("search", help="semantic search over vault docs (requires index)")
+    s.add_argument("query", help="search query")
+    s.add_argument(
+        "--k", type=int, default=5, help="max results (default: 5)",
+    )
+    s.add_argument(
+        "--backend",
+        choices=["auto", "transformers", "ngram"],
+        default="auto",
+        help="embedding backend: transformers (needs sentence-transformers), "
+             "ngram (pure Python, keyword-only), or auto (tries transformers, "
+             "falls back to ngram). Default: auto",
+    )
+    s.set_defaults(func=cmd_search)
+
+    s = sub.add_parser("index", help="(re)build semantic search index")
+    s.add_argument(
+        "--force", action="store_true", help="force rebuild even if index exists",
+    )
+    s.add_argument(
+        "--backend",
+        choices=["auto", "transformers", "ngram"],
+        default="auto",
+        help="embedding backend. Default: auto",
+    )
+    s.set_defaults(func=cmd_index)
+
     return p
 
 
